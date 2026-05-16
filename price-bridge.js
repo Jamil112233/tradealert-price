@@ -181,6 +181,20 @@ function connectWebSocket() {
     }));
 
     log('Subscribed to GOLD + SILVER tick + OHLC');
+
+    // Ping WebSocket every 30 seconds to keep connection alive
+    // Capital.com closes after ~60s of no activity
+    if (ws._pingInterval) clearInterval(ws._pingInterval);
+    ws._pingInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          destination: 'ping',
+          correlationId: 'ping-' + Date.now(),
+          cst,
+          securityToken,
+        }));
+      }
+    }, 30000);
   });
 
   ws.on('message', (data) => {
@@ -252,6 +266,7 @@ function connectWebSocket() {
   });
 
   ws.on('close', (code, reason) => {
+    if (ws._pingInterval) { clearInterval(ws._pingInterval); ws._pingInterval = null; }
     log(`WebSocket closed: ${code} ${reason} — reconnecting in 5s`);
     setTimeout(reconnectWebSocket, 5000);
   });
