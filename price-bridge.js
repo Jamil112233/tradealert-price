@@ -105,6 +105,10 @@ function get(url, headers = {}) {
 // ── Step 1: Create Capital.com session ──────────────────────────────────────
 async function createSession() {
   log('Creating Capital.com session...');
+  log(`Using email: ${CAP_EMAIL}`);
+  log(`Using API key: ${CAP_API_KEY?.substring(0,4)}...`);
+  log(`Password length: ${CAP_PASSWORD?.length}`);
+
   const res = await post(`${CAP_DEMO_REST}/api/v1/session`, {
     identifier: CAP_EMAIL,
     password: CAP_PASSWORD,
@@ -112,6 +116,10 @@ async function createSession() {
   }, {
     'X-CAP-API-KEY': CAP_API_KEY,
   });
+
+  log(`Session response status: ${res.status}`);
+  log(`Session response body: ${JSON.stringify(res.body)}`);
+  log(`Session response headers CST: ${res.headers['cst']?.substring(0,8)}`);
 
   if (res.status !== 200) {
     throw new Error(`Session failed: ${res.status} ${JSON.stringify(res.body)}`);
