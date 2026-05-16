@@ -1,0 +1,12 @@
+{
+  "name": "trade-alert-price-bridge",
+  "version": "1.0.0",
+  "description": "Capital.com WebSocket price bridge for Trade Alert app",
+  "main": "price-bridge.js",
+  "scripts": {
+    "start": "node price-bridge.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
