@@ -105,9 +105,6 @@ function get(url, headers = {}) {
 // ── Step 1: Create Capital.com session ──────────────────────────────────────
 async function createSession() {
   log('Creating Capital.com session...');
-  log(`Using email: ${CAP_EMAIL}`);
-  log(`Using API key: ${CAP_API_KEY?.substring(0,4)}...`);
-  log(`Password length: ${CAP_PASSWORD?.length}`);
 
   const res = await post(`${CAP_DEMO_REST}/api/v1/session`, {
     identifier: CAP_EMAIL,
@@ -117,17 +114,13 @@ async function createSession() {
     'X-CAP-API-KEY': CAP_API_KEY,
   });
 
-  log(`Session response status: ${res.status}`);
-  log(`Session response body: ${JSON.stringify(res.body)}`);
-  log(`Session response headers CST: ${res.headers['cst']?.substring(0,8)}`);
-
   if (res.status !== 200) {
     throw new Error(`Session failed: ${res.status} ${JSON.stringify(res.body)}`);
   }
 
   cst           = res.headers['cst'];
   securityToken = res.headers['x-security-token'];
-  log(`Session created. CST=${cst?.substring(0,8)}...`);
+  log(`Session created successfully`);
 }
 
 // ── Step 2: Ping session every 9 minutes to keep it alive ───────────────────
@@ -200,7 +193,6 @@ function connectWebSocket() {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      log(`WS message received: ${msg.destination || JSON.stringify(msg).substring(0,100)}`);
 
       // Live tick price update
       if (msg.destination === 'quote' && msg.payload) {
@@ -285,24 +277,45 @@ function reconnectWebSocket() {
 // ── Step 4: Write current price to Firebase Realtime DB every 5 seconds ─────
 async function updateFirebase() {
   if (!prices.GOLD.current && !prices.SILVER.current) return;
+  if (!FIREBASE_URL || !FIREBASE_SECRET) {
+    log('Firebase not configured — skipping');
+    return;
+  }
 
+  const now  = Date.now();
   const data = {
-    xau: { current: prices.GOLD.current,   updatedAt: Date.now() },
-    xag: { current: prices.SILVER.current, updatedAt: Date.now() },
+    xau: {
+      current:   prices.GOLD.current,
+      open:      prices.GOLD.open    || prices.GOLD.current,
+      high:      prices.GOLD.high    || prices.GOLD.current,
+      low:       prices.GOLD.low     || prices.GOLD.current,
+      close:     prices.GOLD.close   || prices.GOLD.current,
+      ohlc:      prices.GOLD.ohlc    || {},
+      updatedAt: now,
+    },
+    xag: {
+      current:   prices.SILVER.current,
+      open:      prices.SILVER.open    || prices.SILVER.current,
+      high:      prices.SILVER.high    || prices.SILVER.current,
+      low:       prices.SILVER.low     || prices.SILVER.current,
+      close:     prices.SILVER.close   || prices.SILVER.current,
+      ohlc:      prices.SILVER.ohlc    || {},
+      updatedAt: now,
+    },
   };
 
   const url = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
 
   return new Promise((resolve) => {
-    const body = JSON.stringify(data);
-    const urlObj = new URL(url);
-    const req = https.request({
+    const body    = JSON.stringify(data);
+    const urlObj  = new URL(url);
+    const req     = https.request({
       hostname: urlObj.hostname,
-      port: 443,
-      path: urlObj.pathname + urlObj.search,
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
+      port:     443,
+      path:     urlObj.pathname + urlObj.search,
+      method:   'PUT',
+      headers:  {
+        'Content-Type':   'application/json',
         'Content-Length': Buffer.byteLength(body),
       },
     }, res => {
@@ -393,35 +406,6 @@ async function main() {
   setInterval(updateWorker, 60 * 1000);
 
   log('=== Price Bridge running ===');
-
-  // ── TEST MODE (market closed) ─────────────────────────────────────────────
-  // Sends fake prices every 2 minutes to verify full pipeline works.
-  // Remove this block once market opens and real prices flow in.
-  let testCount = 0;
-  const testInterval = setInterval(async () => {
-    testCount++;
-    const fakeGold   = 3300 + (Math.random() * 10 - 5); // ~3300 ± 5
-    const fakeSilver = 32.5 + (Math.random() * 0.2 - 0.1);
-    prices.GOLD.current = fakeGold;
-    prices.GOLD.open    = fakeGold - 1;
-    prices.GOLD.high    = fakeGold + 2;
-    prices.GOLD.low     = fakeGold - 2;
-    prices.GOLD.close   = fakeGold;
-    prices.SILVER.current = fakeSilver;
-    prices.SILVER.open    = fakeSilver - 0.05;
-    prices.SILVER.high    = fakeSilver + 0.1;
-    prices.SILVER.low     = fakeSilver - 0.1;
-    prices.SILVER.close   = fakeSilver;
-    log(`[TEST ${testCount}] Sending fake prices: GOLD=${fakeGold.toFixed(2)} SILVER=${fakeSilver.toFixed(3)}`);
-    await updateFirebase();
-    await updateWorker();
-    // Stop after 5 tests — just enough to verify pipeline
-    if (testCount >= 5) {
-      clearInterval(testInterval);
-      log('[TEST] Pipeline verification complete — waiting for real market data');
-    }
-  }, 2 * 60 * 1000); // every 2 minutes
-  // ── END TEST MODE ─────────────────────────────────────────────────────────
 }
 
 main().catch(e => {
