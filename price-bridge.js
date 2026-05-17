@@ -290,7 +290,8 @@ function connectWebSocket(btcEpic) {
         }
       }
 
-      // OHLC candle update — use these for accurate candle close data
+      // OHLC candle update — update Firestore IMMEDIATELY when candle closes
+      // This ensures Worker always has fresh data when cron runs at :00 each minute
       if (msg.destination === 'ohlc.event' && msg.payload) {
         const epic       = msg.payload.epic;
         const resolution = msg.payload.resolution;
@@ -300,13 +301,9 @@ function connectWebSocket(btcEpic) {
         const c = msg.payload.c;
 
         if (prices[epic] !== undefined && o && h && l && c) {
-          // Update OHLC for the appropriate timeframe
-          // For worker alert checking, we primarily need M1
-          // Store all timeframes separately
           if (!prices[epic].ohlc) prices[epic].ohlc = {};
           prices[epic].ohlc[resolution] = { o, h, l, c, t: msg.payload.t };
 
-          // Use M1 close as the primary candle close
           if (resolution === 'MINUTE') {
             prices[epic].open  = o;
             prices[epic].high  = h;
@@ -314,6 +311,11 @@ function connectWebSocket(btcEpic) {
             prices[epic].close = c;
           }
           log(`OHLC ${epic} ${resolution}: O=${o} H=${h} L=${l} C=${c}`);
+
+          // Update Firestore immediately — don't wait for 60s timer
+          // Worker cron runs at :00 each minute, OHLC arrives at :00 too
+          // Immediate write ensures Worker gets fresh data not 1-minute-old data
+          updateFirestoreOHLC().catch(e => log(`Firestore immediate write error: ${e.message}`));
         }
       }
 
@@ -522,13 +524,13 @@ async function main() {
   // Update Firebase RTDB every 5 seconds (current price only — minimal bandwidth)
   setInterval(updateFirebase, 5000);
 
-  // Update Firestore OHLC + Worker every 60 seconds
+  // Update Worker every 60 seconds (current price only — OHLC already sent on candle close)
   setInterval(async () => {
-    await updateFirestoreOHLC();
     await updateWorker();
   }, 60 * 1000);
 
   log('=== Price Bridge running ===');
+  log(`Config check: PROJECT_ID=${FIREBASE_PROJECT_ID} WEB_API_KEY=${FIREBASE_WEB_API_KEY?.substring(0,8)}... FIREBASE_URL=${FIREBASE_URL?.substring(0,30)}...`);
 }
 
 main().catch(e => {
