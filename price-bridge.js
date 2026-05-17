@@ -409,6 +409,7 @@ async function updateFirestoreOHLC() {
     const h1  = ohlc['HOUR']      || {};
 
     const doc = {
+      current: p.current, // also stored here so Worker can read current price
       // M1: high + low needed for instant-hit touch detection
       m1:  { h: m1.h  || 0, l: m1.l  || 0, c: m1.c  || p.current },
       // M5/M15/H1: only close needed for candle-close alerts
@@ -422,17 +423,14 @@ async function updateFirestoreOHLC() {
     // Using REST API with Firebase Auth (Database Secret works for Firestore too via legacy)
     // Actually use Firestore REST endpoint
     try {
-      const firestoreUrl = FIREBASE_URL
-        .replace('firebaseio.com', 'firestore.googleapis.com/v1/projects/')
-        .replace('https://', '')
-        .replace(/-default-rtdb.*/, '');
-      // Extract project ID from RTDB URL: https://PROJECT-default-rtdb.firebaseio.com
+      // Project ID extracted from RTDB URL: https://PROJECT-default-rtdb.firebaseio.com
       const projectId = FIREBASE_URL
         .replace('https://', '')
         .replace('-default-rtdb.firebaseio.com', '')
         .replace('.firebaseio.com', '');
 
-      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?key=${FIREBASE_SECRET}`;
+      // Firestore REST — use access token from FIREBASE_SECRET (legacy token)
+      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?access_token=${FIREBASE_SECRET}`;
 
       // Build Firestore document format
       function toFsValue(val) {
