@@ -340,7 +340,6 @@ function reconnectWebSocket() {
 
 // ── Step 4: Write current price to Firebase Realtime DB every 5 seconds ─────
 async function updateFirebase() {
-  // Check if ANY price has been received
   const hasAnyPrice = Object.values(prices).some(p => p.current > 0);
   if (!hasAnyPrice) {
     log('No prices yet — skipping Firebase write');
@@ -351,107 +350,141 @@ async function updateFirebase() {
     return;
   }
 
-  const now  = Date.now();
+  // RTDB stores ONLY current price — keeps bandwidth minimal for mobile listeners
+  const btcPrice = currentBtcEpic ? (prices[currentBtcEpic]?.current || 0) : 0;
   const data = {
-    xau: {
-      current:   prices.GOLD.current,
-      open:      prices.GOLD.open    || prices.GOLD.current,
-      high:      prices.GOLD.high    || prices.GOLD.current,
-      low:       prices.GOLD.low     || prices.GOLD.current,
-      close:     prices.GOLD.close   || prices.GOLD.current,
-      ohlc:      prices.GOLD.ohlc    || {},
-      updatedAt: now,
-    },
-    xag: {
-      current:   prices.SILVER.current,
-      open:      prices.SILVER.open    || prices.SILVER.current,
-      high:      prices.SILVER.high    || prices.SILVER.current,
-      low:       prices.SILVER.low     || prices.SILVER.current,
-      close:     prices.SILVER.close   || prices.SILVER.current,
-      ohlc:      prices.SILVER.ohlc    || {},
-      updatedAt: now,
-    },
-    btc: (() => {
-      const btcData = currentBtcEpic ? prices[currentBtcEpic] : null;
-      const cur = btcData?.current || 0;
-      return {
-        current:   cur,
-        open:      btcData?.open  || cur,
-        high:      btcData?.high  || cur,
-        low:       btcData?.low   || cur,
-        close:     btcData?.close || cur,
-        ohlc:      btcData?.ohlc  || {},
-        updatedAt: now,
-      };
-    })(),
+    xau: { current: prices.GOLD?.current   || 0, updatedAt: Date.now() },
+    xag: { current: prices.SILVER?.current || 0, updatedAt: Date.now() },
+    btc: { current: btcPrice,                     updatedAt: Date.now() },
   };
 
-  const url = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
+  const url    = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
+  const body   = JSON.stringify(data);
+  const urlObj = new URL(url);
 
   return new Promise((resolve) => {
-    const body    = JSON.stringify(data);
-    const urlObj  = new URL(url);
-    const req     = https.request({
+    const req = https.request({
       hostname: urlObj.hostname,
       port:     443,
       path:     urlObj.pathname + urlObj.search,
       method:   'PUT',
-      headers:  {
-        'Content-Type':   'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
+      headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }, res => {
-      let respBody = '';
-      res.on('data', (c) => respBody += c);
-      res.on('end', () => {
-        log(`Firebase write status: ${res.statusCode}`);
-        resolve();
-      });
+      let rb = '';
+      res.on('data', c => rb += c);
+      res.on('end', () => { log(`RTDB write: ${res.statusCode}`); resolve(); });
     });
-    req.on('error', (e) => { log(`Firebase write error: ${e.message}`); resolve(); });
+    req.on('error', e => { log(`RTDB error: ${e.message}`); resolve(); });
     req.write(body);
     req.end();
   });
 }
 
-// ── Step 5: Send OHLC + current price to Cloudflare Worker every minute ──────
+// ── Step 4b: Write OHLC to Firestore every minute ───────────────────────────
+// Stores 1 document per symbol: prices/xau and prices/xag (and prices/btc for testing)
+// Worker reads these for alert checking — 1 read per symbol per cron run
+// Format: { m1:{h,l,c}, m5:{h,l,c}, m15:{h,l,c}, h1:{h,l,c}, updatedAt }
+// M1 also has high/low for instant-hit touch detection
+// M5/M15/H1 only need close for candle-close alerts
+
+async function updateFirestoreOHLC() {
+  if (!FIREBASE_URL || !FIREBASE_SECRET) return;
+
+  const symbols = [
+    { key: 'xau',  epic: 'GOLD' },
+    { key: 'xag',  epic: 'SILVER' },
+    { key: 'btc',  epic: currentBtcEpic },
+  ];
+
+  for (const { key, epic } of symbols) {
+    if (!epic) continue;
+    const p = prices[epic];
+    if (!p || !p.current) continue;
+
+    const ohlc = p.ohlc || {};
+    // Use bid priceType for cleaner prices (closer to spot)
+    const m1  = ohlc['MINUTE']    || {};
+    const m5  = ohlc['MINUTE_5']  || {};
+    const m15 = ohlc['MINUTE_15'] || {};
+    const h1  = ohlc['HOUR']      || {};
+
+    const doc = {
+      // M1: high + low needed for instant-hit touch detection
+      m1:  { h: m1.h  || 0, l: m1.l  || 0, c: m1.c  || p.current },
+      // M5/M15/H1: only close needed for candle-close alerts
+      m5:  { h: m5.h  || 0, l: m5.l  || 0, c: m5.c  || p.current },
+      m15: { h: m15.h || 0, l: m15.l || 0, c: m15.c || p.current },
+      h1:  { h: h1.h  || 0, l: h1.l  || 0, c: h1.c  || p.current },
+      updatedAt: Date.now(),
+    };
+
+    // Write to Firestore: prices/{key}
+    // Using REST API with Firebase Auth (Database Secret works for Firestore too via legacy)
+    // Actually use Firestore REST endpoint
+    try {
+      const firestoreUrl = FIREBASE_URL
+        .replace('firebaseio.com', 'firestore.googleapis.com/v1/projects/')
+        .replace('https://', '')
+        .replace(/-default-rtdb.*/, '');
+      // Extract project ID from RTDB URL: https://PROJECT-default-rtdb.firebaseio.com
+      const projectId = FIREBASE_URL
+        .replace('https://', '')
+        .replace('-default-rtdb.firebaseio.com', '')
+        .replace('.firebaseio.com', '');
+
+      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?key=${FIREBASE_SECRET}`;
+
+      // Build Firestore document format
+      function toFsValue(val) {
+        if (typeof val === 'number') return { doubleValue: val };
+        if (typeof val === 'string') return { stringValue: val };
+        if (typeof val === 'object') {
+          const fields = {};
+          for (const [k, v] of Object.entries(val)) fields[k] = toFsValue(v);
+          return { mapValue: { fields } };
+        }
+        return { nullValue: null };
+      }
+
+      const fsDoc = { fields: {} };
+      for (const [k, v] of Object.entries(doc)) {
+        fsDoc.fields[k] = toFsValue(v);
+      }
+
+      const resp = await fetch(fsUrl, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fsDoc),
+      });
+      if (resp.ok) {
+        log(`Firestore OHLC updated: ${key} M1 close=${doc.m1.c}`);
+      } else {
+        const err = await resp.text();
+        log(`Firestore OHLC error (${key}): ${resp.status} ${err.substring(0,100)}`);
+      }
+    } catch(e) {
+      log(`Firestore OHLC exception (${key}): ${e.message}`);
+    }
+  }
+}
+
+// ── Step 5: Send current price to Cloudflare Worker every minute ──────────────
 async function updateWorker() {
   if (!Object.values(prices).some(p => p.current > 0)) return;
 
+  const btcPrice = currentBtcEpic ? (prices[currentBtcEpic]?.current || 0) : 0;
   const body = {
-    xau: {
-      current: prices.GOLD.current,
-      open:    prices.GOLD.open    || prices.GOLD.current,
-      high:    prices.GOLD.high    || prices.GOLD.current,
-      low:     prices.GOLD.low     || prices.GOLD.current,
-      close:   prices.GOLD.close   || prices.GOLD.current,
-      ohlc:    prices.GOLD.ohlc    || {},
-    },
-    xag: {
-      current: prices.SILVER.current,
-      open:    prices.SILVER.open    || prices.SILVER.current,
-      high:    prices.SILVER.high    || prices.SILVER.current,
-      low:     prices.SILVER.low     || prices.SILVER.current,
-      close:   prices.SILVER.close   || prices.SILVER.current,
-      ohlc:    prices.SILVER.ohlc    || {},
-    },
-    btc: (() => {
-      const btcData = currentBtcEpic ? prices[currentBtcEpic] : null;
-      const cur = btcData?.current || 0;
-      return { current: cur, open: btcData?.open||cur, high: btcData?.high||cur, low: btcData?.low||cur, close: btcData?.close||cur, ohlc: btcData?.ohlc||{} };
-    })(),
+    xau: { current: prices.GOLD?.current   || 0 },
+    xag: { current: prices.SILVER?.current || 0 },
+    btc: { current: btcPrice },
     timestamp: Date.now(),
   };
 
   try {
-    const res = await post(WORKER_URL, body, {
-      'X-Secret-Key': WORKER_SECRET,
-    });
+    const res = await post(WORKER_URL, body, { 'X-Secret-Key': WORKER_SECRET });
     if (res.status === 200) log(`Worker updated: GOLD=${body.xau.current?.toFixed(2)} SILVER=${body.xag.current?.toFixed(3)} BTC=${body.btc.current?.toFixed(2)}`);
     else log(`Worker update failed: ${res.status}`);
-  } catch (e) {
-    log(`Worker POST error: ${e.message}`);
-  }
+  } catch(e) { log(`Worker POST error: ${e.message}`); }
 }
 
 // ── Keep Render alive — it kills services with no HTTP port ──────────────────
@@ -492,11 +525,14 @@ async function main() {
   // Ping session every 9 minutes to keep alive (session expires at 10 min)
   setInterval(pingSession, 9 * 60 * 1000);
 
-  // Update Firebase every 5 seconds
+  // Update Firebase RTDB every 5 seconds (current price only — minimal bandwidth)
   setInterval(updateFirebase, 5000);
 
-  // Update Worker every 60 seconds
-  setInterval(updateWorker, 60 * 1000);
+  // Update Firestore OHLC + Worker every 60 seconds
+  setInterval(async () => {
+    await updateFirestoreOHLC();
+    await updateWorker();
+  }, 60 * 1000);
 
   log('=== Price Bridge running ===');
 }
