@@ -147,37 +147,67 @@ async function pingSession() {
   }
 }
 
+// ── Step 2.5: Find correct epic name for Bitcoin ────────────────────────────
+async function findBitcoinEpic() {
+  try {
+    const res = await get(
+      `${CAP_DEMO_REST}/api/v1/markets?searchTerm=Bitcoin&limit=5`,
+      { 'CST': cst, 'X-SECURITY-TOKEN': securityToken }
+    );
+    if (res.status === 200 && res.body?.markets) {
+      log(`Bitcoin markets found: ${JSON.stringify(res.body.markets.map(m => ({ epic: m.epic, name: m.instrumentName })))}`);
+      // Return first BTC/USD result
+      const btcMarket = res.body.markets.find(m =>
+        m.instrumentName?.includes('Bitcoin') && m.epic
+      );
+      return btcMarket?.epic || null;
+    }
+  } catch(e) {
+    log(`findBitcoinEpic error: ${e.message}`);
+  }
+  return null;
+}
+
 // ── Step 3: Connect WebSocket and subscribe ─────────────────────────────────
-function connectWebSocket() {
+function connectWebSocket(btcEpic) {
+  currentBtcEpic = btcEpic; // store for reconnect
   log('Connecting WebSocket...');
   ws = new WebSocket(CAP_WS_URL);
+
+  const tickEpics = ['GOLD', 'SILVER'];
+  const ohlcEpics = ['GOLD', 'SILVER'];
+  if (btcEpic) {
+    tickEpics.push(btcEpic);
+    ohlcEpics.push(btcEpic);
+    // Store BTC epic for price tracking
+    if (!prices[btcEpic]) prices[btcEpic] = { current: 0, open: 0, high: 0, low: 0, close: 0 };
+    if (!tickCandle[btcEpic]) tickCandle[btcEpic] = { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 };
+  }
 
   ws.on('open', () => {
     log('WebSocket connected');
 
-    // Subscribe to live tick prices (bid/ask)
     ws.send(JSON.stringify({
       destination: 'marketData.subscribe',
       correlationId: '1',
       cst,
       securityToken,
-      payload: { epics: ['GOLD', 'SILVER', 'BITCOIN', 'BTC'] },
+      payload: { epics: tickEpics },
     }));
 
-    // Subscribe to OHLC candles — M1, M5, M15, H1
     ws.send(JSON.stringify({
       destination: 'OHLCMarketData.subscribe',
       correlationId: '2',
       cst,
       securityToken,
       payload: {
-        epics: ['GOLD', 'SILVER', 'BITCOIN', 'BTC'],
+        epics: ohlcEpics,
         resolutions: ['MINUTE', 'MINUTE_5', 'MINUTE_15', 'HOUR'],
         type: 'classic',
       },
     }));
 
-    log('Subscribed to GOLD + SILVER tick + OHLC');
+    log(`Subscribed to: ${tickEpics.join(', ')} tick + OHLC`);
 
     // Ping WebSocket every 30 seconds to keep connection alive
     // Capital.com closes after ~60s of no activity
@@ -282,9 +312,11 @@ function connectWebSocket() {
   });
 }
 
+let currentBtcEpic = null;
+
 function reconnectWebSocket() {
   if (ws) { try { ws.terminate(); } catch {} ws = null; }
-  connectWebSocket();
+  connectWebSocket(currentBtcEpic);
 }
 
 // ── Step 4: Write current price to Firebase Realtime DB every 5 seconds ─────
@@ -318,15 +350,19 @@ async function updateFirebase() {
       ohlc:      prices.SILVER.ohlc    || {},
       updatedAt: now,
     },
-    btc: {
-      current:   prices.BITCOIN.current || prices.BTC.current,
-      open:      prices.BITCOIN.open    || prices.BTC.open    || prices.BITCOIN.current || prices.BTC.current,
-      high:      prices.BITCOIN.high    || prices.BTC.high    || prices.BITCOIN.current || prices.BTC.current,
-      low:       prices.BITCOIN.low     || prices.BTC.low     || prices.BITCOIN.current || prices.BTC.current,
-      close:     prices.BITCOIN.close   || prices.BTC.close   || prices.BITCOIN.current || prices.BTC.current,
-      ohlc:      prices.BITCOIN.ohlc    || prices.BTC.ohlc    || {},
-      updatedAt: now,
-    },
+    btc: (() => {
+      const btcData = currentBtcEpic ? prices[currentBtcEpic] : null;
+      const cur = btcData?.current || 0;
+      return {
+        current:   cur,
+        open:      btcData?.open  || cur,
+        high:      btcData?.high  || cur,
+        low:       btcData?.low   || cur,
+        close:     btcData?.close || cur,
+        ohlc:      btcData?.ohlc  || {},
+        updatedAt: now,
+      };
+    })(),
   };
 
   const url = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
@@ -378,14 +414,11 @@ async function updateWorker() {
       close:   prices.SILVER.close   || prices.SILVER.current,
       ohlc:    prices.SILVER.ohlc    || {},
     },
-    btc: {
-      current: prices.BITCOIN.current || prices.BTC.current,
-      open:    prices.BITCOIN.open    || prices.BTC.open    || prices.BITCOIN.current || prices.BTC.current,
-      high:    prices.BITCOIN.high    || prices.BTC.high    || prices.BITCOIN.current || prices.BTC.current,
-      low:     prices.BITCOIN.low     || prices.BTC.low     || prices.BITCOIN.current || prices.BTC.current,
-      close:   prices.BITCOIN.close   || prices.BTC.close   || prices.BITCOIN.current || prices.BTC.current,
-      ohlc:    prices.BITCOIN.ohlc    || prices.BTC.ohlc    || {},
-    },
+    btc: (() => {
+      const btcData = currentBtcEpic ? prices[currentBtcEpic] : null;
+      const cur = btcData?.current || 0;
+      return { current: cur, open: btcData?.open||cur, high: btcData?.high||cur, low: btcData?.low||cur, close: btcData?.close||cur, ohlc: btcData?.ohlc||{} };
+    })(),
     timestamp: Date.now(),
   };
 
@@ -431,7 +464,9 @@ async function main() {
   await createSession();
 
   // Connect WebSocket
-  connectWebSocket();
+  const btcEpic = await findBitcoinEpic();
+  log(`Bitcoin epic name: ${btcEpic || 'not found — skipping BTC'}`);
+  connectWebSocket(btcEpic);
 
   // Ping session every 9 minutes to keep alive (session expires at 10 min)
   setInterval(pingSession, 9 * 60 * 1000);
