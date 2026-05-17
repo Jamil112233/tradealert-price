@@ -239,6 +239,12 @@ function connectWebSocket(btcEpic) {
 
       // Live tick price update
       if (msg.destination === 'quote' && msg.payload) {
+        // Log first few quotes to see exact structure
+        if (!ws._quotesLogged) ws._quotesLogged = 0;
+        if (ws._quotesLogged < 3) {
+          log(`QUOTE payload: ${JSON.stringify(msg.payload)}`);
+          ws._quotesLogged++;
+        }
         const epic = msg.payload.epic;
         if (prices[epic] !== undefined) {
           // Use mid price (bid + ask) / 2 for display
