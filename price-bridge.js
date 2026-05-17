@@ -432,6 +432,7 @@ async function updateFirestoreOHLC() {
 
       // Firestore REST with Web API Key — works when Firestore rules allow public write
       const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?key=${FIREBASE_WEB_API_KEY}`;
+      log(`Firestore URL (${key}): ${fsUrl.replace(FIREBASE_WEB_API_KEY, 'KEY_HIDDEN')}`);
 
       // Build Firestore document format
       function toFsValue(val) {
