@@ -20,7 +20,8 @@ const CAP_PASSWORD = process.env.CAP_PASSWORD;    // API key custom password
 const CAP_API_KEY  = process.env.CAP_API_KEY;     // Capital.com API key
 
 const FIREBASE_URL = process.env.FIREBASE_URL;    // e.g. https://YOUR-PROJECT-default-rtdb.firebaseio.com
-const FIREBASE_SECRET = process.env.FIREBASE_SECRET; // Firebase DB secret (for server-side write)
+const FIREBASE_SECRET     = process.env.FIREBASE_SECRET;     // Firebase RTDB secret
+const FIREBASE_WEB_API_KEY = process.env.FIREBASE_WEB_API_KEY; // Firebase Web API Key (for Firestore REST)
 
 const WORKER_URL   = process.env.WORKER_URL;      // e.g. https://your-worker.workers.dev/update-price
 const WORKER_SECRET = process.env.WORKER_SECRET;  // Secret key to authenticate with Worker
@@ -429,8 +430,8 @@ async function updateFirestoreOHLC() {
         .replace('-default-rtdb.firebaseio.com', '')
         .replace('.firebaseio.com', '');
 
-      // Firestore REST — use access token from FIREBASE_SECRET (legacy token)
-      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?access_token=${FIREBASE_SECRET}`;
+      // Firestore REST with Web API Key — works when Firestore rules allow public write
+      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/prices/${key}?key=${FIREBASE_WEB_API_KEY}`;
 
       // Build Firestore document format
       function toFsValue(val) {
