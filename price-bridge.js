@@ -37,12 +37,14 @@ let ws = null;
 const prices = {
   GOLD:   { current: 0, open: 0, high: 0, low: 0, close: 0 },
   SILVER: { current: 0, open: 0, high: 0, low: 0, close: 0 },
+  BITCOIN:{ current: 0, open: 0, high: 0, low: 0, close: 0 }, // test pair (24/7)
 };
 
 // Current minute candle being built from ticks
 const tickCandle = {
   GOLD:   { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
   SILVER: { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
+  BITCOIN:{ open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -157,7 +159,7 @@ function connectWebSocket() {
       correlationId: '1',
       cst,
       securityToken,
-      payload: { epics: ['GOLD', 'SILVER'] },
+      payload: { epics: ['GOLD', 'SILVER', 'BITCOIN'] },
     }));
 
     // Subscribe to OHLC candles — M1, M5, M15, H1
@@ -167,7 +169,7 @@ function connectWebSocket() {
       cst,
       securityToken,
       payload: {
-        epics: ['GOLD', 'SILVER'],
+        epics: ['GOLD', 'SILVER', 'BITCOIN'],
         resolutions: ['MINUTE', 'MINUTE_5', 'MINUTE_15', 'HOUR'],
         type: 'classic',
       },
@@ -302,6 +304,15 @@ async function updateFirebase() {
       ohlc:      prices.SILVER.ohlc    || {},
       updatedAt: now,
     },
+    btc: {
+      current:   prices.BITCOIN.current,
+      open:      prices.BITCOIN.open    || prices.BITCOIN.current,
+      high:      prices.BITCOIN.high    || prices.BITCOIN.current,
+      low:       prices.BITCOIN.low     || prices.BITCOIN.current,
+      close:     prices.BITCOIN.close   || prices.BITCOIN.current,
+      ohlc:      prices.BITCOIN.ohlc    || {},
+      updatedAt: now,
+    },
   };
 
   const url = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
@@ -349,6 +360,14 @@ async function updateWorker() {
       close:   prices.SILVER.close   || prices.SILVER.current,
       ohlc:    prices.SILVER.ohlc    || {},
     },
+    btc: {
+      current: prices.BITCOIN.current,
+      open:    prices.BITCOIN.open    || prices.BITCOIN.current,
+      high:    prices.BITCOIN.high    || prices.BITCOIN.current,
+      low:     prices.BITCOIN.low     || prices.BITCOIN.current,
+      close:   prices.BITCOIN.close   || prices.BITCOIN.current,
+      ohlc:    prices.BITCOIN.ohlc    || {},
+    },
     timestamp: Date.now(),
   };
 
@@ -356,7 +375,7 @@ async function updateWorker() {
     const res = await post(WORKER_URL, body, {
       'X-Secret-Key': WORKER_SECRET,
     });
-    if (res.status === 200) log(`Worker updated: GOLD=${body.xau.current} SILVER=${body.xag.current}`);
+    if (res.status === 200) log(`Worker updated: GOLD=${body.xau.current?.toFixed(2)} SILVER=${body.xag.current?.toFixed(3)} BTC=${body.btc.current?.toFixed(2)}`);
     else log(`Worker update failed: ${res.status}`);
   } catch (e) {
     log(`Worker POST error: ${e.message}`);
