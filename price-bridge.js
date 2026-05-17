@@ -37,7 +37,8 @@ let ws = null;
 const prices = {
   GOLD:   { current: 0, open: 0, high: 0, low: 0, close: 0 },
   SILVER: { current: 0, open: 0, high: 0, low: 0, close: 0 },
-  BITCOIN:{ current: 0, open: 0, high: 0, low: 0, close: 0 }, // test pair (24/7)
+  BITCOIN:{ current: 0, open: 0, high: 0, low: 0, close: 0 }, // Capital.com epic
+  BTC:    { current: 0, open: 0, high: 0, low: 0, close: 0 }, // alternate epic name
 };
 
 // Current minute candle being built from ticks
@@ -45,6 +46,7 @@ const tickCandle = {
   GOLD:   { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
   SILVER: { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
   BITCOIN:{ open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
+  BTC:    { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -159,7 +161,7 @@ function connectWebSocket() {
       correlationId: '1',
       cst,
       securityToken,
-      payload: { epics: ['GOLD', 'SILVER', 'BITCOIN'] },
+      payload: { epics: ['GOLD', 'SILVER', 'BITCOIN', 'BTC'] },
     }));
 
     // Subscribe to OHLC candles — M1, M5, M15, H1
@@ -169,7 +171,7 @@ function connectWebSocket() {
       cst,
       securityToken,
       payload: {
-        epics: ['GOLD', 'SILVER', 'BITCOIN'],
+        epics: ['GOLD', 'SILVER', 'BITCOIN', 'BTC'],
         resolutions: ['MINUTE', 'MINUTE_5', 'MINUTE_15', 'HOUR'],
         type: 'classic',
       },
@@ -194,7 +196,16 @@ function connectWebSocket() {
 
   ws.on('message', (data) => {
     try {
-      const msg = JSON.parse(data.toString());
+      const raw = data.toString();
+      const msg = JSON.parse(raw);
+
+      // Log every message destination for debugging
+      log(`WS msg: ${msg.destination || 'unknown'} | status: ${msg.status || ''}`);
+
+      // Log full message if it's not a ping (to see subscription responses)
+      if (msg.destination !== 'ping' && msg.destination !== 'quote') {
+        log(`WS full: ${raw.substring(0, 300)}`);
+      }
 
       // Live tick price update
       if (msg.destination === 'quote' && msg.payload) {
@@ -278,7 +289,10 @@ function reconnectWebSocket() {
 
 // ── Step 4: Write current price to Firebase Realtime DB every 5 seconds ─────
 async function updateFirebase() {
-  if (!prices.GOLD.current && !prices.SILVER.current) return;
+  if (!prices.GOLD.current && !prices.SILVER.current && !prices.BITCOIN.current) {
+    log('No prices yet — skipping Firebase write');
+    return;
+  }
   if (!FIREBASE_URL || !FIREBASE_SECRET) {
     log('Firebase not configured — skipping');
     return;
@@ -305,12 +319,12 @@ async function updateFirebase() {
       updatedAt: now,
     },
     btc: {
-      current:   prices.BITCOIN.current,
-      open:      prices.BITCOIN.open    || prices.BITCOIN.current,
-      high:      prices.BITCOIN.high    || prices.BITCOIN.current,
-      low:       prices.BITCOIN.low     || prices.BITCOIN.current,
-      close:     prices.BITCOIN.close   || prices.BITCOIN.current,
-      ohlc:      prices.BITCOIN.ohlc    || {},
+      current:   prices.BITCOIN.current || prices.BTC.current,
+      open:      prices.BITCOIN.open    || prices.BTC.open    || prices.BITCOIN.current || prices.BTC.current,
+      high:      prices.BITCOIN.high    || prices.BTC.high    || prices.BITCOIN.current || prices.BTC.current,
+      low:       prices.BITCOIN.low     || prices.BTC.low     || prices.BITCOIN.current || prices.BTC.current,
+      close:     prices.BITCOIN.close   || prices.BTC.close   || prices.BITCOIN.current || prices.BTC.current,
+      ohlc:      prices.BITCOIN.ohlc    || prices.BTC.ohlc    || {},
       updatedAt: now,
     },
   };
@@ -330,8 +344,12 @@ async function updateFirebase() {
         'Content-Length': Buffer.byteLength(body),
       },
     }, res => {
-      res.on('data', () => {});
-      res.on('end', () => resolve());
+      let respBody = '';
+      res.on('data', (c) => respBody += c);
+      res.on('end', () => {
+        log(`Firebase write status: ${res.statusCode}`);
+        resolve();
+      });
     });
     req.on('error', (e) => { log(`Firebase write error: ${e.message}`); resolve(); });
     req.write(body);
@@ -341,7 +359,7 @@ async function updateFirebase() {
 
 // ── Step 5: Send OHLC + current price to Cloudflare Worker every minute ──────
 async function updateWorker() {
-  if (!prices.GOLD.current && !prices.SILVER.current) return;
+  if (!prices.GOLD.current && !prices.SILVER.current && !prices.BITCOIN.current) return;
 
   const body = {
     xau: {
@@ -361,12 +379,12 @@ async function updateWorker() {
       ohlc:    prices.SILVER.ohlc    || {},
     },
     btc: {
-      current: prices.BITCOIN.current,
-      open:    prices.BITCOIN.open    || prices.BITCOIN.current,
-      high:    prices.BITCOIN.high    || prices.BITCOIN.current,
-      low:     prices.BITCOIN.low     || prices.BITCOIN.current,
-      close:   prices.BITCOIN.close   || prices.BITCOIN.current,
-      ohlc:    prices.BITCOIN.ohlc    || {},
+      current: prices.BITCOIN.current || prices.BTC.current,
+      open:    prices.BITCOIN.open    || prices.BTC.open    || prices.BITCOIN.current || prices.BTC.current,
+      high:    prices.BITCOIN.high    || prices.BTC.high    || prices.BITCOIN.current || prices.BTC.current,
+      low:     prices.BITCOIN.low     || prices.BTC.low     || prices.BITCOIN.current || prices.BTC.current,
+      close:   prices.BITCOIN.close   || prices.BTC.close   || prices.BITCOIN.current || prices.BTC.current,
+      ohlc:    prices.BITCOIN.ohlc    || prices.BTC.ohlc    || {},
     },
     timestamp: Date.now(),
   };
