@@ -246,7 +246,11 @@ function connectWebSocket(btcEpic) {
           ws._quotesLogged++;
         }
         const epic = msg.payload.epic;
-        if (prices[epic] !== undefined) {
+        // Ensure prices entry exists for any epic we receive (handles dynamic epics)
+        if (epic && !prices[epic]) {
+          prices[epic] = { current: 0, open: 0, high: 0, low: 0, close: 0, ohlc: {} };
+        }
+        if (epic && prices[epic] !== undefined) {
           // Use mid price (bid + ask) / 2 for display
           const bid = msg.payload.bid || 0;
           const ask = msg.payload.ofr || 0;
@@ -256,6 +260,10 @@ function connectWebSocket(btcEpic) {
             prices[epic].current = mid;
 
             // Build tick-based candle for current minute
+            // Ensure tickCandle entry exists for dynamic epics (e.g. BTCUSD)
+            if (!tickCandle[epic]) {
+              tickCandle[epic] = { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 };
+            }
             const tc = tickCandle[epic];
             const nowMin = Math.floor(Date.now() / 60000);
             if (tc.startedAt !== nowMin) {
