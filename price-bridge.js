@@ -200,6 +200,7 @@ function connectWebSocket() {
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
+      log(`WS message received: ${msg.destination || JSON.stringify(msg).substring(0,100)}`);
 
       // Live tick price update
       if (msg.destination === 'quote' && msg.payload) {
@@ -392,6 +393,35 @@ async function main() {
   setInterval(updateWorker, 60 * 1000);
 
   log('=== Price Bridge running ===');
+
+  // ── TEST MODE (market closed) ─────────────────────────────────────────────
+  // Sends fake prices every 2 minutes to verify full pipeline works.
+  // Remove this block once market opens and real prices flow in.
+  let testCount = 0;
+  const testInterval = setInterval(async () => {
+    testCount++;
+    const fakeGold   = 3300 + (Math.random() * 10 - 5); // ~3300 ± 5
+    const fakeSilver = 32.5 + (Math.random() * 0.2 - 0.1);
+    prices.GOLD.current = fakeGold;
+    prices.GOLD.open    = fakeGold - 1;
+    prices.GOLD.high    = fakeGold + 2;
+    prices.GOLD.low     = fakeGold - 2;
+    prices.GOLD.close   = fakeGold;
+    prices.SILVER.current = fakeSilver;
+    prices.SILVER.open    = fakeSilver - 0.05;
+    prices.SILVER.high    = fakeSilver + 0.1;
+    prices.SILVER.low     = fakeSilver - 0.1;
+    prices.SILVER.close   = fakeSilver;
+    log(`[TEST ${testCount}] Sending fake prices: GOLD=${fakeGold.toFixed(2)} SILVER=${fakeSilver.toFixed(3)}`);
+    await updateFirebase();
+    await updateWorker();
+    // Stop after 5 tests — just enough to verify pipeline
+    if (testCount >= 5) {
+      clearInterval(testInterval);
+      log('[TEST] Pipeline verification complete — waiting for real market data');
+    }
+  }, 2 * 60 * 1000); // every 2 minutes
+  // ── END TEST MODE ─────────────────────────────────────────────────────────
 }
 
 main().catch(e => {
