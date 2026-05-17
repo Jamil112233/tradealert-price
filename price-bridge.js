@@ -258,6 +258,11 @@ function connectWebSocket(btcEpic) {
           if (mid > 0) {
             const prev = prices[epic].current;
             prices[epic].current = mid;
+            if (!ws._priceSetLogged) ws._priceSetLogged = 0;
+            if (ws._priceSetLogged < 5) {
+              log(`Price set: ${epic} = ${mid}`);
+              ws._priceSetLogged++;
+            }
 
             // Build tick-based candle for current minute
             // Ensure tickCandle entry exists for dynamic epics (e.g. BTCUSD)
@@ -335,7 +340,9 @@ function reconnectWebSocket() {
 
 // ── Step 4: Write current price to Firebase Realtime DB every 5 seconds ─────
 async function updateFirebase() {
-  if (!prices.GOLD.current && !prices.SILVER.current && !prices.BITCOIN.current) {
+  // Check if ANY price has been received
+  const hasAnyPrice = Object.values(prices).some(p => p.current > 0);
+  if (!hasAnyPrice) {
     log('No prices yet — skipping Firebase write');
     return;
   }
@@ -409,7 +416,7 @@ async function updateFirebase() {
 
 // ── Step 5: Send OHLC + current price to Cloudflare Worker every minute ──────
 async function updateWorker() {
-  if (!prices.GOLD.current && !prices.SILVER.current && !prices.BITCOIN.current) return;
+  if (!Object.values(prices).some(p => p.current > 0)) return;
 
   const body = {
     xau: {
