@@ -39,8 +39,6 @@ let ws = null;
 const prices = {
   GOLD:   { current: 0, open: 0, high: 0, low: 0, close: 0 },
   SILVER: { current: 0, open: 0, high: 0, low: 0, close: 0 },
-  BITCOIN:{ current: 0, open: 0, high: 0, low: 0, close: 0 }, // Capital.com epic
-  BTC:    { current: 0, open: 0, high: 0, low: 0, close: 0 }, // alternate epic name
 };
 
 // Debounce timers for Firestore writes — prevents multiple writes per OHLC event burst
@@ -51,8 +49,6 @@ const firestoreDebounce = {};
 const tickCandle = {
   GOLD:   { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
   SILVER: { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
-  BITCOIN:{ open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
-  BTC:    { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -361,11 +357,9 @@ async function updateFirebase() {
   }
 
   // RTDB stores ONLY current price — keeps bandwidth minimal for mobile listeners
-  const btcPrice = currentBtcEpic ? (prices[currentBtcEpic]?.current || 0) : 0;
   const data = {
     xau: { current: prices.GOLD?.current   || 0, updatedAt: Date.now() },
     xag: { current: prices.SILVER?.current || 0, updatedAt: Date.now() },
-    btc: { current: btcPrice,                     updatedAt: Date.now() },
   };
 
   const url    = `${FIREBASE_URL}/prices.json?auth=${FIREBASE_SECRET}`;
@@ -403,7 +397,6 @@ async function updateFirestoreOHLC(onlyEpic = null) {
   const symbols = [
     { key: 'xau',  epic: 'GOLD' },
     { key: 'xag',  epic: 'SILVER' },
-    { key: 'btc',  epic: currentBtcEpic },
   ];
 
   for (const { key, epic } of symbols) {
@@ -476,17 +469,15 @@ async function updateFirestoreOHLC(onlyEpic = null) {
 async function updateWorker() {
   if (!Object.values(prices).some(p => p.current > 0)) return;
 
-  const btcPrice = currentBtcEpic ? (prices[currentBtcEpic]?.current || 0) : 0;
   const body = {
     xau: { current: prices.GOLD?.current   || 0 },
     xag: { current: prices.SILVER?.current || 0 },
-    btc: { current: btcPrice },
     timestamp: Date.now(),
   };
 
   try {
     const res = await post(WORKER_URL, body, { 'X-Secret-Key': WORKER_SECRET });
-    if (res.status === 200) log(`Worker updated: GOLD=${body.xau.current?.toFixed(2)} SILVER=${body.xag.current?.toFixed(3)} BTC=${body.btc.current?.toFixed(2)}`);
+    if (res.status === 200) log(`Worker updated: GOLD=${body.xau.current?.toFixed(2)} SILVER=${body.xag.current?.toFixed(3)}`);
     else log(`Worker update failed: ${res.status}`);
   } catch(e) { log(`Worker POST error: ${e.message}`); }
 }
@@ -522,9 +513,7 @@ async function main() {
   await createSession();
 
   // Connect WebSocket
-  const btcEpic = await findBitcoinEpic();
-  log(`Bitcoin epic name: ${btcEpic || 'not found — skipping BTC'}`);
-  connectWebSocket(btcEpic);
+  connectWebSocket(null);
 
   // Ping session every 9 minutes to keep alive (session expires at 10 min)
   setInterval(pingSession, 9 * 60 * 1000);
