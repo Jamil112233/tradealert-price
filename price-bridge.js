@@ -43,6 +43,10 @@ const prices = {
   BTC:    { current: 0, open: 0, high: 0, low: 0, close: 0 }, // alternate epic name
 };
 
+// Debounce timers for Firestore writes — prevents multiple writes per OHLC event burst
+// Capital.com sends bid+ask separately, we collect for 2s then write once per symbol
+const firestoreDebounce = {};
+
 // Current minute candle being built from ticks
 const tickCandle = {
   GOLD:   { open: 0, high: 0, low: 0, lastMinuteClose: 0, startedAt: 0 },
@@ -312,10 +316,12 @@ function connectWebSocket(btcEpic) {
           }
           log(`OHLC ${epic} ${resolution}: O=${o} H=${h} L=${l} C=${c}`);
 
-          // Update Firestore immediately — don't wait for 60s timer
-          // Worker cron runs at :00 each minute, OHLC arrives at :00 too
-          // Immediate write ensures Worker gets fresh data not 1-minute-old data
-          updateFirestoreOHLC().catch(e => log(`Firestore immediate write error: ${e.message}`));
+          // Debounced Firestore write — collect all OHLC events for 2 seconds
+          // then write once per symbol (bid+ask both arrive within milliseconds)
+          if (firestoreDebounce[epic]) clearTimeout(firestoreDebounce[epic]);
+          firestoreDebounce[epic] = setTimeout(() => {
+            updateFirestoreOHLC(epic).catch(e => log(`Firestore write error: ${e.message}`));
+          }, 2000);
         }
       }
 
@@ -391,7 +397,7 @@ async function updateFirebase() {
 // M1 also has high/low for instant-hit touch detection
 // M5/M15/H1 only need close for candle-close alerts
 
-async function updateFirestoreOHLC() {
+async function updateFirestoreOHLC(onlyEpic = null) {
   if (!FIREBASE_URL || !FIREBASE_SECRET) return;
 
   const symbols = [
@@ -401,6 +407,8 @@ async function updateFirestoreOHLC() {
   ];
 
   for (const { key, epic } of symbols) {
+    // If called for specific epic only, skip others
+    if (onlyEpic && epic !== onlyEpic) continue;
     if (!epic) continue;
     const p = prices[epic];
     if (!p || !p.current) continue;
